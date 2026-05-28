@@ -1,0 +1,395 @@
+esphome:
+  name: !secret name
+  friendly_name: !secret friendly_name
+  on_boot:
+    - priority: -100
+      then:
+        - component.resume: stick_display
+        - light.turn_on:
+            id: backlight
+            brightness: 15%
+        - script.execute: inactivity_pmic_sleep_timer
+
+  includes:
+    - <Wire.h>
+    - <SPI.h>
+    - <M5PM1.h>
+    - <SparkFun_BMI270_Arduino_Library.h>
+
+  libraries:
+    - Wire
+    - SPI
+    - M5PM1=git+https://github.com/m5stack/M5PM1.git#1.0.6
+    - m5stack/M5Unified@^0.2.7
+    - m5stack/M5GFX@^0.2.16
+    - sparkfun/SparkFun BMI270 Arduino Library@^1.0.3
+
+  platformio_options:
+    board_build.partitions: partitions/default_8MB.csv
+    board_build.arduino.memory_type: qio_opi
+    build_flags:
+      - -DESP32S3
+      - -DBOARD_HAS_PSRAM
+      - -mfix-esp32-psram-cache-issue
+      - -DCORE_DEBUG_LEVEL=1
+      - -DARDUINO_USB_CDC_ON_BOOT=1
+      - -DARDUINO_USB_MODE=1
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: arduino
+#    version: recommended
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: DEBUG
+  baud_rate: 0
+
+ota:
+  - platform: web_server
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: HIGH
+  fast_connect: true
+  reboot_timeout: 0s
+
+web_server:
+  port: 80
+
+external_components:
+  - source:
+      type: local
+#      path: components
+      path: external_components
+
+m5sticks3_power:
+  id: stick_power
+  sda: GPIO47
+  scl: GPIO48
+  address: 0x6E
+  imu_address: 0x68
+  motion_threshold: !secret motion_threshold
+  motion_duration: !secret motion_duration
+
+mqtt:
+  broker: !secret mqtt_broker
+  username: !secret mqtt_user
+  password: !secret mqtt_password
+  discovery: false
+  topic_prefix: !secret mqtt_topic_prefix
+  birth_message:
+    topic: !secret counter_message_topic
+    payload: online
+    retain: true
+  will_message:
+    topic: !secret counter_message_topic
+    payload: offline
+    retain: true
+
+  on_connect:
+    then:
+      - mqtt.publish:
+          topic: !secret counter_get_topic
+          payload: "counter_d_boot"
+      - script.execute: inactivity_pmic_sleep_timer
+
+  on_json_message:
+    - topic: !secret counter_state_topic
+      then:
+        - lambda: |-
+            if (x["value"].is<float>()) {
+              float next_value = x["value"].as<float>();
+              bool changed = (!id(counter_seen)) || (next_value != id(counter_value));
+
+              id(counter_value) = next_value;
+              id(counter_seen) = true;
+
+              if (x["updated_by"].is<const char*>()) {
+                id(updated_by) = x["updated_by"].as<std::string>();
+              }
+
+              if (changed) {
+                id(stick_display).update();
+              }
+            }
+
+script:
+  - id: inactivity_pmic_sleep_timer
+    mode: restart
+    then:
+      - delay: 5s
+      - light.turn_on:
+          id: backlight
+          brightness: 10%
+
+      - delay: 10s
+
+      # Force a fresh PMIC reading before deciding USB vs battery.
+      - component.update: stick_power
+      - delay: 500ms
+
+      - if:
+          condition:
+            lambda: |-
+              // VIN high = USB/charger present.
+              // VIN low or unknown = battery mode.
+              if (isnan(id(vin_voltage).state)) {
+                ESP_LOGW("usb_check", "VIN unknown -> assuming battery mode");
+                return true;
+              }
+
+              ESP_LOGI("usb_check", "VIN = %.2f V", id(vin_voltage).state);
+              return id(vin_voltage).state < 4.5;
+          then:
+            - logger.log: "Battery mode -> display sleep, WiFi off, PMIC shutdown"
+            - component.suspend: stick_display
+            - light.turn_off: backlight
+            - delay: 150ms
+            - wifi.disable:
+            - delay: 500ms
+            - lambda: |-
+                id(stick_power).enter_pmic_shutdown();
+          else:
+            - logger.log: "USB/charging detected -> display sleep only, WiFi kept awake"
+            - component.suspend: stick_display
+            - light.turn_off: backlight
+
+
+interval:
+  - interval: 250ms
+    then:
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_on: dual_red
+              - binary_sensor.is_on: dual_blue
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    return !id(dual_reset_sent);
+                then:
+                  - delay: 2s
+
+                  - if:
+                      condition:
+                        and:
+                          - binary_sensor.is_on: dual_red
+                          - binary_sensor.is_on: dual_blue
+                      then:
+                        - logger.log: "Dual Button long press reset"
+
+                        - component.resume: stick_display
+                        - light.turn_on:
+                            id: backlight
+                            brightness: 15%
+                        - script.execute: inactivity_pmic_sleep_timer
+
+                        - mqtt.publish_json:
+                            topic: !secret counter_command_topic
+                            payload: |-
+                              root["action"] = "reset";
+                              root["source"] = App.get_name();
+
+                        - lambda: |-
+                            id(dual_reset_sent) = true;
+
+          else:
+            - lambda: |-
+                id(dual_reset_sent) = false;
+
+
+globals:
+  - id: counter_value
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: counter_seen
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: updated_by
+    type: std::string
+    restore_value: no
+    initial_value: '"booting"'
+
+  - id: dual_reset_sent
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+output:
+  - platform: ledc
+    pin: GPIO38
+    id: lcd_backlight_raw
+    frequency: 1000Hz
+
+light:
+  - platform: monochromatic
+    id: backlight
+    output: lcd_backlight_raw
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 22
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 44
+  - file: "gfonts://Roboto"
+    id: font_tiny
+    size: 14
+
+display:
+  - platform: m5sticks3_display
+    id: stick_display
+    update_interval: 10s
+    lambda: |-
+      it.fill(esphome::Color(0,0,0));
+      it.printf(6, 12, id(font_small), esphome::Color(255,255,255), "Capacity Counter D");
+      if (id(counter_seen)) {
+        it.printf(6, 48, id(font_big), esphome::Color(255,255,0), "%.0f", id(counter_value));
+      } else {
+        it.printf(6, 48, id(font_big), esphome::Color(255,128,0), "--");
+      }
+      it.printf(6, 106, id(font_tiny), esphome::Color(120,200,255), "Shake wake + USB aware");
+
+binary_sensor:
+  - platform: gpio
+    id: key1
+    name: "StickS3 Key1 Request State"
+    pin:
+      number: GPIO11
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - component.resume: stick_display
+      - light.turn_on:
+          id: backlight
+          brightness: 15%
+      - script.execute: inactivity_pmic_sleep_timer
+      - mqtt.publish:
+          topic: !secret counter_get_topic
+          payload: "key1_request"
+
+  - platform: gpio
+    id: key2
+    name: "StickS3 Key2 Reset"
+    pin:
+      number: GPIO12
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - component.resume: stick_display
+      - light.turn_on:
+          id: backlight
+          brightness: 15%
+      - script.execute: inactivity_pmic_sleep_timer
+
+  - platform: gpio
+    id: dual_red
+    name: "Dual Button Red"
+    pin:
+      number: GPIO9
+      mode:
+        input: true
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - component.resume: stick_display
+      - light.turn_on:
+          id: backlight
+          brightness: 15%
+      - script.execute: inactivity_pmic_sleep_timer
+      - if:
+          condition:
+            not:
+              binary_sensor.is_on: dual_blue
+          then:
+            - mqtt.publish_json:
+                topic: !secret counter_command_topic
+                payload: |-
+                  root["action"] = "decrement";
+                  root["source"] = App.get_name();
+
+  - platform: gpio
+    id: dual_blue
+    name: "Dual Button Blue"
+    pin:
+      number: GPIO10
+      mode:
+        input: true
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - component.resume: stick_display
+      - light.turn_on:
+          id: backlight
+          brightness: 15%
+      - script.execute: inactivity_pmic_sleep_timer
+      - if:
+          condition:
+            not:
+              binary_sensor.is_on: dual_red
+          then:
+            - mqtt.publish_json:
+                topic: !secret counter_command_topic
+                payload: |-
+                  root["action"] = "increment";
+                  root["source"] = App.get_name();
+
+sensor:
+  - platform: m5sticks3_power
+    battery_voltage:
+      name: "StickS3 Battery Voltage"
+      id: battery_voltage
+    input_voltage:
+      name: "StickS3 VIN"
+      id: vin_voltage
+    five_volt_voltage:
+      name: "StickS3 5V Rail"
+      id: rail_5v
+  - platform: template
+    name: "StickS3 Battery Percent"
+    id: battery_percent
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      if (isnan(id(battery_voltage).state)) {
+        return NAN;
+      }
+      float v = id(battery_voltage).state;
+      if (v >= 4.20) return 100.0;
+      if (v <= 3.20) return 0.0;
+      return (v - 3.20) * 100.0 / (4.20 - 3.20);
+  - platform: wifi_signal
+    name: "StickS3 WiFi RSSI"
+    update_interval: 120s
+  - platform: uptime
+    name: "StickS3 Uptime"
+    update_interval: 120s

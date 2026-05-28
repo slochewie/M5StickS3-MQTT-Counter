@@ -1,0 +1,137 @@
+#include "m5sticks3_power.h"
+#include "esphome/core/log.h"
+
+namespace esphome {
+namespace m5sticks3_power {
+
+static const char *TAG = "m5sticks3_power";
+
+bool M5StickS3Power::init_pmic_() {
+  Wire.begin(sda_pin_, scl_pin_, 100000);
+  delay(20);
+
+  m5pm1_err_t err = pm1_.begin(&Wire, address_, sda_pin_, scl_pin_, 100000);
+  if (err != M5PM1_OK) {
+    ESP_LOGE(TAG, "PMIC init failed: %d", err);
+    return false;
+  }
+
+  delay(20);
+
+  pm1_.setDcdcEnable(true);
+  delay(20);
+
+  pm1_.setLdoEnable(true);
+  delay(20);
+
+  pm1_.setChargeEnable(true);
+  delay(20);
+
+  pm1_.setBoostEnable(true);
+  delay(20);
+
+  // Proven LCD/audio rail wake sequence from working StickS3 YAML.
+  pm1_.gpioSetFunc(M5PM1_GPIO_NUM_2, M5PM1_GPIO_FUNC_GPIO);
+  pm1_.gpioSetMode(M5PM1_GPIO_NUM_2, M5PM1_GPIO_MODE_OUTPUT);
+  pm1_.gpioSetDrive(M5PM1_GPIO_NUM_2, M5PM1_GPIO_DRIVE_PUSHPULL);
+  pm1_.gpioSetOutput(M5PM1_GPIO_NUM_2, false);
+  delay(100);
+
+  pmic_ready_ = true;
+  ESP_LOGI(TAG, "PMIC init complete");
+  return true;
+}
+
+void M5StickS3Power::setup() {
+  init_pmic_();
+}
+
+void M5StickS3Power::update() {
+  if (!pmic_ready_) return;
+
+  uint16_t mv = 0;
+  m5pm1_err_t err;
+
+  if (battery_sensor_ != nullptr) {
+    err = pm1_.readVbat(&mv);
+    if (err == M5PM1_OK) {
+      battery_sensor_->publish_state(mv / 1000.0f);
+    }
+  }
+
+  if (input_sensor_ != nullptr) {
+    err = pm1_.readVin(&mv);
+    if (err == M5PM1_OK) {
+      input_sensor_->publish_state(mv / 1000.0f);
+    }
+  }
+
+  if (five_volt_sensor_ != nullptr) {
+    err = pm1_.read5VInOut(&mv);
+    if (err == M5PM1_OK) {
+      five_volt_sensor_->publish_state(mv / 1000.0f);
+    }
+  }
+}
+
+void M5StickS3Power::enter_pmic_shutdown() {
+  ESP_LOGW(TAG, "Preparing PMIC power-off with I2C/PMIC re-sync");
+
+  // Re-sync PMIC I2C immediately before shutdown. M5PM1 can sleep its I2C
+  // interface; this forces a fresh bus + driver init before power commands.
+  Wire.end();
+  delay(20);
+
+  Wire.begin(sda_pin_, scl_pin_, 100000);
+  delay(20);
+
+  m5pm1_err_t err = pm1_.begin(&Wire, address_, sda_pin_, scl_pin_, 100000);
+  if (err != M5PM1_OK) {
+    ESP_LOGE(TAG, "PMIC re-init before shutdown failed: %d", err);
+    return;
+  }
+
+  pmic_ready_ = true;
+  delay(50);
+
+  ESP_LOGW(TAG, "PMIC re-sync complete; clearing IRQ flags");
+
+  pm1_.irqClearGpioAll();
+  pm1_.irqClearSysAll();
+  pm1_.irqClearBtnAll();
+  delay(50);
+
+  // Disable GPIO wake sources. The intended wake source is the physical PWR button.
+  pm1_.gpioSetWakeEnable(M5PM1_GPIO_NUM_0, false);
+  pm1_.gpioSetWakeEnable(M5PM1_GPIO_NUM_2, false);
+  pm1_.gpioSetWakeEnable(M5PM1_GPIO_NUM_3, false);
+  pm1_.gpioSetWakeEnable(M5PM1_GPIO_NUM_4, false);
+  delay(50);
+
+  // Release power-hold paths. Do not hold LDO/boost for PWR-button-only poweroff.
+  pm1_.ldoSetPowerHold(false);
+  delay(20);
+
+  pm1_.boostSetPowerHold(false);
+  delay(20);
+
+  // Turn off LCD/audio rail.
+  pm1_.gpioSetOutput(M5PM1_GPIO_NUM_2, true);
+  delay(50);
+
+  ESP_LOGW(TAG, "Requesting PMIC timer power-off in 1 second");
+  delay(250);
+
+  err = pm1_.timerSet(1, M5PM1_TIM_ACTION_POWEROFF);
+  if (err != M5PM1_OK) {
+    ESP_LOGE(TAG, "PMIC timer power-off request failed: %d", err);
+    return;
+  }
+
+  // If timer power-off succeeds, execution should stop shortly after this.
+  delay(3000);
+  ESP_LOGE(TAG, "Still alive after PMIC timer power-off request");
+}
+
+}  // namespace m5sticks3_power
+}  // namespace esphome
