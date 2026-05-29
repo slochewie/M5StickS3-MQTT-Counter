@@ -31,6 +31,10 @@ class M5StickS3Power : public PollingComponent {
   void enter_pmic_shutdown();
   bool imu_test_read();
 
+  // Control the PMIC boost converter / 5V rail.
+  void enable_boost();
+  void disable_boost();
+
  protected:
   bool init_pmic_();
   bool init_m5_();

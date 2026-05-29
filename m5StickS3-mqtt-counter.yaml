@@ -132,6 +132,9 @@ script:
       - component.suspend: stick_display
       - light.turn_off: backlight
       - wifi.disable:
+      - delay: 250ms
+      - lambda: |-
+          id(stick_power).disable_boost();
 
   - id: exit_quiet_mode
     mode: restart
@@ -139,6 +142,9 @@ script:
       - lambda: |-
           id(quiet_mode) = false;
       - logger.log: "Exiting quiet charging mode"
+      - lambda: |-
+          id(stick_power).enable_boost();
+      - delay: 250ms
       - wifi.enable:
       - delay: 2s
       - component.resume: stick_display

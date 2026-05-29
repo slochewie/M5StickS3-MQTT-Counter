@@ -208,6 +208,32 @@ bool M5StickS3Power::configure_bmi270_motion_wake_() {
   return true;
 }
 
+
+
+void M5StickS3Power::enable_boost() {
+  ESP_LOGW(TAG, "Enabling PMIC boost / 5V rail");
+
+  if (!resync_pmic_()) {
+    ESP_LOGE(TAG, "Cannot enable boost: PMIC re-sync failed");
+    return;
+  }
+
+  pm1_.setBoostEnable(true);
+  delay(50);
+}
+
+void M5StickS3Power::disable_boost() {
+  ESP_LOGW(TAG, "Disabling PMIC boost / 5V rail");
+
+  if (!resync_pmic_()) {
+    ESP_LOGE(TAG, "Cannot disable boost: PMIC re-sync failed");
+    return;
+  }
+
+  pm1_.setBoostEnable(false);
+  delay(50);
+}
+
 void M5StickS3Power::enter_pmic_shutdown() {
   ESP_LOGW(TAG, "Preparing PMIC power-off with BMI270 shake wake");
 
