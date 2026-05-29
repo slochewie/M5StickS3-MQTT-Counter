@@ -122,6 +122,34 @@ mqtt:
             }
 
 script:
+  - id: enter_quiet_mode
+    mode: restart
+    then:
+      - lambda: |-
+          id(quiet_mode) = true;
+      - logger.log: "Entering quiet charging mode"
+      - script.stop: inactivity_pmic_sleep_timer
+      - component.suspend: stick_display
+      - light.turn_off: backlight
+      - wifi.disable:
+
+  - id: exit_quiet_mode
+    mode: restart
+    then:
+      - lambda: |-
+          id(quiet_mode) = false;
+      - logger.log: "Exiting quiet charging mode"
+      - wifi.enable:
+      - delay: 2s
+      - component.resume: stick_display
+      - light.turn_on:
+          id: backlight
+          brightness: 15%
+      - mqtt.publish:
+          topic: !secret counter_get_topic
+          payload: "quiet_mode_wake"
+      - script.execute: inactivity_pmic_sleep_timer
+
   - id: inactivity_pmic_sleep_timer
     mode: restart
     then:
@@ -226,6 +254,11 @@ globals:
     restore_value: no
     initial_value: 'false'
 
+  - id: quiet_mode
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
 output:
   - platform: ledc
     pin: GPIO38
@@ -256,7 +289,7 @@ display:
     update_interval: 10s
     lambda: |-
       it.fill(esphome::Color(0,0,0));
-      it.printf(6, 12, id(font_small), esphome::Color(255,255,255), "Capacity Counter D");
+      it.printf(6, 12, id(font_small), esphome::Color(255,255,255), "Capacity Counter A");
       if (id(counter_seen)) {
         it.printf(6, 48, id(font_big), esphome::Color(255,255,0), "%.0f", id(counter_value));
       } else {
@@ -289,7 +322,7 @@ binary_sensor:
 
   - platform: gpio
     id: key2
-    name: "StickS3 Key2 Reset"
+    name: "StickS3 Key2 Quiet Charging Mode"
     pin:
       number: GPIO12
       mode:
@@ -300,11 +333,14 @@ binary_sensor:
       - delayed_on: 10ms
       - delayed_off: 10ms
     on_press:
-      - component.resume: stick_display
-      - light.turn_on:
-          id: backlight
-          brightness: 15%
-      - script.execute: inactivity_pmic_sleep_timer
+      - if:
+          condition:
+            lambda: |-
+              return id(quiet_mode);
+          then:
+            - script.execute: exit_quiet_mode
+          else:
+            - script.execute: enter_quiet_mode
 
   - platform: gpio
     id: dual_red
