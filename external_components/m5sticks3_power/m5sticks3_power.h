@@ -34,6 +34,7 @@ class M5StickS3Power : public PollingComponent {
   // Control the PMIC boost converter / 5V rail.
   void enable_boost();
   void disable_boost();
+  bool is_boost_enabled();
 
  protected:
   bool init_pmic_();
@@ -45,6 +46,7 @@ class M5StickS3Power : public PollingComponent {
   bool pmic_ready_{false};
   bool m5_ready_{false};
   bool bmi270_ready_{false};
+  bool boost_enabled_{true};
 
   M5PM1 pm1_;
   BMI270 imu_;

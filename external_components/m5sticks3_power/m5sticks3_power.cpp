@@ -24,6 +24,7 @@ bool M5StickS3Power::init_pmic_() {
   pm1_.setChargeEnable(true);
   delay(20);
   pm1_.setBoostEnable(true);
+  boost_enabled_ = true;
   delay(20);
 
   // Proven LCD/audio rail wake sequence from working StickS3 YAML.
@@ -208,8 +209,6 @@ bool M5StickS3Power::configure_bmi270_motion_wake_() {
   return true;
 }
 
-
-
 void M5StickS3Power::enable_boost() {
   ESP_LOGW(TAG, "Enabling PMIC boost / 5V rail");
 
@@ -219,6 +218,7 @@ void M5StickS3Power::enable_boost() {
   }
 
   pm1_.setBoostEnable(true);
+  boost_enabled_ = true;
   delay(50);
 }
 
@@ -231,7 +231,12 @@ void M5StickS3Power::disable_boost() {
   }
 
   pm1_.setBoostEnable(false);
+  boost_enabled_ = false;
   delay(50);
+}
+
+bool M5StickS3Power::is_boost_enabled() {
+  return boost_enabled_;
 }
 
 void M5StickS3Power::enter_pmic_shutdown() {

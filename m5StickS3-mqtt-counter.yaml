@@ -278,6 +278,13 @@ light:
     restore_mode: ALWAYS_ON
     default_transition_length: 0s
 
+switch:
+  - platform: template
+    name: "StickS3 5V Rail"
+    id: boost_switch
+    internal: true
+    optimistic: true
+
 font:
   - file: "gfonts://Roboto"
     id: font_small
@@ -295,7 +302,7 @@ display:
     update_interval: 10s
     lambda: |-
       it.fill(esphome::Color(0,0,0));
-      it.printf(6, 12, id(font_small), esphome::Color(255,255,255), "Capacity Counter A");
+      it.printf(6, 12, id(font_small), esphome::Color(255,255,255), "Capacity Counter Z");
       if (id(counter_seen)) {
         it.printf(6, 48, id(font_big), esphome::Color(255,255,0), "%.0f", id(counter_value));
       } else {
@@ -405,6 +412,16 @@ binary_sensor:
                   root["source"] = App.get_name();
 
 sensor:
+  - platform: template
+    name: "Counter Value"
+    id: counter_value_web
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      if (!id(counter_seen)) {
+        return NAN;
+      }
+      return id(counter_value);
   - platform: m5sticks3_power
     battery_voltage:
       name: "StickS3 Battery Voltage"
